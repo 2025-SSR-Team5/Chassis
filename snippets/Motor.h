@@ -104,20 +104,11 @@ struct Motor {
 #elif defined(ESP_PLATFORM)
 
 #include "driver/ledc.h"
+#include "driver/gpio.h"
 
 #define PWM_MODE LEDC_LOW_SPEED_MODE 
-#define PWM_DUTY_RES LEDC_TIMER_13_BIT // Set duty resolution to 13 bits
+#define PWM_DUTY_RES LEDC_TIMER_10_BIT // Set duty resolution to 13 bits
 #define PWM_FREQUENCY          (20000) // Frequency in Hertz. Set frequency at 20 kHz
-
-ledc_channel_config_t ledc_channel = {
-  .speed_mode     = LEDC_MODE,
-  .channel        = LEDC_CHANNEL,
-  .timer_sel      = LEDC_TIMER,
-  .intr_type      = LEDC_INTR_DISABLE,
-  .gpio_num       = LEDC_OUTPUT_IO,
-  .duty           = 0, // Set duty to 0%
-  .hpoint         = 0
-};
 
 namespace rct {
 
@@ -127,35 +118,39 @@ struct Motor {
   /// @param pinA PWM出力ピン
   /// @param pinB DIR出力ピン
 
-  static int num = 0;
-
-  Motor(const int pinA, const int pinB) : pin_{pinA, pinB} {
-    gpio_config_t io_conf = {
-        .pin_bit_mask = 1ULL << pinB,
-        .mode = GPIO_MODE_OUTPUT,
-    };
+  Motor(const int pinA, const int pinB) : pin_{pinA, pinB}, num(next_num++) {
+    // ESP32-S3 has maximum 8 LEDC channels (0-7)
+    if (num >= 8) {
+        printf("Error: Too many Motor instances! Maximum 8 channels available.\n");
+        return;
+    }
+    
+    gpio_config_t io_conf = {};  // (1)
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pin_bit_mask = 1ULL << pinB;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
     gpio_config(&io_conf);
 
     // Prepare and then apply the LEDC PWM timer configuration
-    ledc_timer_config_t pwm_timer = {
-      .speed_mode       = PWM_MODE,
-      .duty_resolution  = PWM_DUTY_RES,
-      .timer_num        = (ledc_timer_t)num,
-      .freq_hz          = PWM_FREQUENCY,  // Set output frequency at 4 kHz
-      .clk_cfg          = LEDC_AUTO_CLK
-    };
+    ledc_timer_config_t pwm_timer = {};
+    pwm_timer.speed_mode = PWM_MODE;
+    pwm_timer.duty_resolution = PWM_DUTY_RES;
+    pwm_timer.timer_num = (ledc_timer_t)num;
+    pwm_timer.freq_hz = PWM_FREQUENCY;
+    pwm_timer.clk_cfg = LEDC_AUTO_CLK;
     ESP_ERROR_CHECK(ledc_timer_config(&pwm_timer));
 
     // Prepare and then apply the LEDC PWM channel configuration
-    ledc_channel_config_t pwm_channel = {
-        .speed_mode     = PWM_MODE,
-        .channel        = (ledc_channel_t)num,
-        .timer_sel      = (ledc_timer_t)num,
-        .intr_type      = PWM_INTR_DISABLE,
-        .gpio_num       = pinA,
-        .duty           = 0, // Set duty to 0%
-        .hpoint         = 0
-    };
+    ledc_channel_config_t pwm_channel = {};
+    pwm_channel.speed_mode = PWM_MODE;
+    pwm_channel.channel = (ledc_channel_t)num;
+    pwm_channel.timer_sel = (ledc_timer_t)num;
+    pwm_channel.intr_type = LEDC_INTR_DISABLE;
+    pwm_channel.gpio_num = pinA;
+    pwm_channel.duty = 0;
+    pwm_channel.hpoint = 0;
     ESP_ERROR_CHECK(ledc_channel_config(&pwm_channel));
   }
   Motor(const Motor&) = delete;
@@ -170,19 +165,20 @@ struct Motor {
   /// @brief PWMを出力する。
   void write() {
     if (pwm_ >= 0) {
-        gpio_set_level(pin_[1], 1);
+        dir_ = 0;
     } else {
-        gpio_set_level(pin_[1], 0);
+        dir_ = 1;
         pwm_ = -pwm_;
     }
-    // Set duty to 50%
-    ESP_ERROR_CHECK(ledc_set_duty(PWM_MODE, (ledc_channel_t)num, (2 ** 13)*pwm_));
+    gpio_set_level((gpio_num_t)pin_[1], dir_);
+    // Set duty to pwm_ * max_duty (10-bit resolution = 1024)
+    ESP_ERROR_CHECK(ledc_set_duty(PWM_MODE, (ledc_channel_t)num, (1 << 10)*pwm_));
     // Update duty to apply the new value
     ESP_ERROR_CHECK(ledc_update_duty(PWM_MODE, (ledc_channel_t)num));
   }
   /// @brief シリアルモニタにモータ出力を表示する。
   void print() {
-    printf("%d\t%d\t", int(pwm_[0] * 100), int(pwm_[1] * 100));
+    printf("%d\t%d\t", int(pwm_ * 100), dir_);
   }
   /// @brief モータ出力をセットしPWM出力する。
   /// @param val モータ出力
@@ -195,8 +191,14 @@ struct Motor {
   }
   private:
     int pin_[2];
-    uint8_t pwm_ = 0;
+    float pwm_ = 0;
+    int dir_ = 0;
+
+    int num;
+    static int next_num;
 };
+
+int Motor::next_num = 0;
 
 }
 
