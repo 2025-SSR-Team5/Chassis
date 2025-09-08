@@ -43,6 +43,16 @@ struct Chassis {
     const auto out_vel = vel_pid_.calc(tag_vel, now_vel, delta_time);
     t_.move(out_vel, offset_rad);
   }
+
+  /**
+   * @brief 手動操縦用。指令値をそのままT型のmoveに渡す。
+   * 
+   * @param vel 移動速度
+   * @param offset_rad 姿勢角
+   */
+  void move(const Velocity& vel, const float offset_rad = 0.0) {
+    t_.move(vel, offset_rad);
+  }
   /// @brief 自動制御用。変位のPID制御を行い、出力をT型のcalcに渡す。
   /// @param dst 目標座標
   /// @param pos 現在座標
